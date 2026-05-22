@@ -1,0 +1,16 @@
+**/exp/
+**/data/
+**.pth
+
+**.ckpt
+
+.vscode/
+.vscode/**
+
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+__pycache__/
+**/__pycache__/
+
+**/lightning_logs/**
