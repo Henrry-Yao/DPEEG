@@ -67,6 +67,10 @@ class PLModel(pl.LightningModule):
         )
         self.diffusion_criterion = torch.nn.MSELoss()
 
+        self.subject_sim_history = {}
+        self.subject_mu = {}
+        self.subject_sigma = {}
+
         # 双向相似度记录
         self.gen_img_similarities = []
         self.gen_eeg_similarities = []
@@ -94,21 +98,40 @@ class PLModel(pl.LightningModule):
             gamma = self.gamma
 
             batch_sim = gamma * diagonal_elements + (1 - gamma) * self.sim[idx]
-            
-            mean_sim = np.mean(batch_sim)
-            std_sim = np.std(batch_sim, ddof=1)
+            self.sim[idx] = batch_sim
+
             match_label = np.ones_like(batch_sim)
             z_alpha_2 = norm.ppf(1 - self.alpha / 2)
 
-            lower_bound = mean_sim -z_alpha_2 * std_sim
-            upper_bound = mean_sim +z_alpha_2 * std_sim
+            # 个体化不确定性：按受试者分组（向量化版本）
+            subjects = batch['subject'].cpu().numpy()
+            unique_subs = np.unique(subjects)
 
-            match_label[diagonal_elements > upper_bound] = 0
-            match_label[diagonal_elements < lower_bound] = 2
+            for sub in unique_subs:
+                sub_key = str(int(sub))
+                sub_mask = (subjects == sub)
+                sub_sims = batch_sim[sub_mask]
 
-            self.sim[idx] = batch_sim
+                if sub_key not in self.subject_sim_history:
+                    self.subject_sim_history[sub_key] = []
+                self.subject_sim_history[sub_key].extend(sub_sims.tolist())
+
+                history = self.subject_sim_history[sub_key]
+                if len(history) >= 10:
+                    mu = np.mean(history)
+                    sigma = max(np.std(history, ddof=1), 1e-8)
+                else:
+                    mu = np.mean(batch_sim)
+                    sigma = max(np.std(batch_sim, ddof=1) if len(batch_sim) > 1 else 1.0, 1e-8)
+
+                lower_bound = mu - z_alpha_2 * sigma
+                upper_bound = mu + z_alpha_2 * sigma
+
+                sub_diag = diagonal_elements[sub_mask]
+                match_label[sub_mask & (sub_diag > upper_bound)] = 0
+                match_label[sub_mask & (sub_diag < lower_bound)] = 2
+
             self.match_label[idx] = match_label
-           
             loss = total_loss
         else:
             loss = total_loss
@@ -252,16 +275,15 @@ class PLModel(pl.LightningModule):
         else:
             eeg_z = eeg_z / eeg_z.norm(dim=-1, keepdim=True)
             similarity = (eeg_z @ img_z.T)
-            similarity_encoding = similarity.T
-            top_kvalues, top_k_indices = similarity_encoding.topk(5, dim=-1)
+            top_kvalues, top_k_indices = similarity.topk(5, dim=-1)
             self.all_predicted_classes.append(top_k_indices.cpu().numpy())
             label = torch.arange(0, batch_size).to(self.device)
             self.all_true_labels.extend(label.cpu().numpy())
             self.match_similarities.extend(
-                similarity_encoding.diag().detach().cpu().tolist()
+                similarity.diag().detach().cpu().tolist()
             )
-            for i in range(similarity_encoding.shape[0]):
-                sims = similarity_encoding[i, :]
+            for i in range(similarity.shape[0]):
+                sims = similarity[i, :]
                 rank = (torch.argsort(-sims) == i).nonzero()[0][0] + 1
                 self.mAP_total += (1 / rank)
 
@@ -319,6 +341,8 @@ class PLModel(pl.LightningModule):
         return [optimizer]
     
     def on_train_epoch_start(self):
+        if not self.config.get('generative_encoding', False):
+            return
         warmup_epochs = self.config['train'].get('warmup_epochs', 30)
         if self.current_epoch == warmup_epochs:
             print(f"\n[Epoch {self.current_epoch}] 切换到阶段二：开始训练扩散模型")
@@ -448,7 +472,7 @@ def main():
     log_every_n_steps=10,
     strategy=DDPStrategy(find_unused_parameters=True),  # ← True
     callbacks=[early_stop_callback, checkpoint_callback],
-    max_epochs=config['train']['epoch'],
+    max_epochs=opt.epoch,
     devices=[device],
     accelerator='cuda',
     logger=logger
