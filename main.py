@@ -149,8 +149,17 @@ class PLModel(pl.LightningModule):
             if current_epoch < warmup_epochs:
                 # 阶段一：只训练EEG编码器，扩散模型不参与
                 total_loss = base_loss
+            elif self.config.get('joint_training', False):
+                # 联合训练：不去detach，两个loss同时回传
+                noise_pred, noise = self.diffusion(img_z, eeg_z)
+                diffusion_loss = self.diffusion_criterion(noise_pred, noise)
+                total_loss = base_loss + diffusion_loss
+                self.log('base_loss', base_loss, on_step=True,
+                        prog_bar=True, batch_size=batch_size)
+                self.log('diffusion_loss', diffusion_loss, on_step=True,
+                        prog_bar=True, batch_size=batch_size)
             else:
-                # 阶段二：detach阻断梯度，只训练扩散模型
+                # 阶段二：detach阻断梯度，只训练扩散模型（分离训练）
                 eeg_z_d = eeg_z.detach()
                 img_z_d = img_z.detach()
                 noise_pred, noise = self.diffusion(img_z_d, eeg_z_d)
@@ -417,6 +426,12 @@ def main():
     action="store_true",
     default=False,
     help="enable generative encoding with diffusion model",
+    )
+    parser.add_argument(
+    "--joint_training",
+    action="store_true",
+    default=False,
+    help="enable joint training: gradients flow to both EEG encoder and diffusion model",
     )
 
     opt = parser.parse_args()
