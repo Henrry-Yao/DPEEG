@@ -107,6 +107,9 @@ def run_experiment(config, brain_ckpt_path, loss_type, device, out_dir):
         if (epoch + 1) % 10 == 0:
             print("  Epoch %3d/%d  loss=%.4f" % (epoch + 1, n_epochs, total_loss / len(train_loader)))
 
+    # ── Save generator checkpoint (loaded by the analysis scripts) ──
+    torch.save(mlp.state_dict(), os.path.join(out_dir, "model.pt"))
+
     # ── Evaluation ──
     mlp.eval()
     all_gen_eeg = []
@@ -203,7 +206,7 @@ def main():
     config['z_dim'] = pretrain_z[args.vision_backbone]
     config['c'] = 6
 
-    out_dir = 'exp/mlp_baseline/%s_%s_%s' % (args.subjects, args.loss, args.vision_backbone)
+    out_dir = 'exp/mlp_baseline/%s_%s_%s_s%d' % (args.subjects, args.loss, args.vision_backbone, args.seed)
     run_experiment(config, args.brain_ckpt, args.loss, device, out_dir)
 
 

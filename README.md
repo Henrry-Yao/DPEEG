@@ -1,139 +1,235 @@
-# Uncertainty-aware Blur Prior (UBP)
+# DPEEG: Diffusion Prior-Based Generative Visual Neural Encoding
 
-## Table of Contents
-- [Introduction](#introduction)
-- [Repo Architecture](#repo-architecture)
-- [Environment Setup](#environment-setup)
-- [Data Preparation](#data-preparation)
-- [Run](#run)
-- [Acknowledgement](#acknowledgement)
+Official implementation of **"DPEEG: Diffusion Prior-Based Generative Visual Neural Encoding"**.
 
-## Introduction
-This is the official implementation for [Bridging the Vision-Brain Gap with an Uncertainty-Aware Blur Prior](https://arxiv.org/abs/2503.04207) (CVPR 2025) with various brain and CLIP encoders. **SOTA** result in the EEG-Vision Retrieval Task.
+Visual neural encoding maps visual stimuli to neural responses. Existing approaches rely on direct regression or deterministic feature mapping, yet real EEG responses are not uniquely determined by the visual stimulus and vary markedly across subjects. **DPEEG** reformulates image→EEG encoding as *conditional neural-response distribution modeling*: a conditional diffusion prior generates EEG features in a shared visual–neural semantic space, together with **individualized (per-subject) uncertainty modeling** and a **decoupled two-stage training strategy** that prevents the generative objective from corrupting the learned neural representation space.
 
-<p align="center">
-<img src="./assets/motivation.png" >
-</p>
+On THINGS-EEG2, DPEEG reaches an average **Top-1 accuracy of 23.8%** for generative neural encoding across 10 subjects (chance level 0.5%), and 54.7% for retrieval-based encoding.
 
+## Overview
+
+The framework (see the paper, Fig. 2) has three components:
+
+1. **Shared visual–neural space.** A frozen OpenCLIP RN50 encoder extracts image features and an `EEGProjectLayer` encoder extracts EEG features; a symmetric contrastive loss aligns them.
+2. **Individualized uncertainty modeling.** Each subject's own visual–EEG semantic-similarity distribution is used to calibrate its uncertainty interval, replacing a single global estimate and reducing inter-subject bias.
+3. **Conditional diffusion prior + decoupled training.** A U-Net-style conditional denoising network learns `p(eeg | img)`. Training is split into *Stage 1* (EEG encoder alignment, epochs 0–30) and *Stage 2* (frozen encoder + diffusion model, epochs 31–230), which removes the gradient conflict between the contrastive and diffusion objectives.
+
+| Task direction | Avg. Top-1 | Avg. Top-5 |
+| --- | --- | --- |
+| Generative encoding (diffusion prior) | 23.8% | 44.2% |
+| Retrieval-based encoding (transposed similarity) | 54.7% | — |
+| Decoding (EEG→image) | 51.5% | — |
 
 ## Repo Architecture
-```
-UBP/                           # Root directory
-├── README.md
-├── base                       # Core implementation files
-│   ├── data.py                # Data loading
-│   ├── eeg_backbone.py        # EEG encoder backbone implementation
-│   ├── inpating_data.py       # Inpainting data module for preprocessing
-│   └── utils.py               # Utility functions
-├── configs
-│   ├── baseline.yaml          # Configuration for baseline experiments
-│   └── ubp.yaml               # Configuration for UBP experiments
-├── data                       # Directory for datasets
-│   └── things-eeg
-│       ├── Image_feature      # Pre-extracted image features
-│       ├── Image_set          # Original image dataset
-│       ├── Image_set_Resize   # Resized image dataset
-│       ├── Preprocessed_data_250Hz_whiten # Preprocessed EEG data (whitened)
-│       └── Raw_data
-├── exp                        # Directory for experiment results
-├── main.py                    # Main script for running experiments
-├── preprocess
-│   ├── process_eeg_whiten.py  # Script to preprocess and whiten EEG data
-│   └── process_resize.py      # Script to resize image dataset
-├── requirements.txt           # List of required Python packages
-└── scripts
-    ├── bash_preprocess.sh     # Bash script for preprocessing data
-    └── exp.sh                 # Bash script for running experiments
-```
-## Environment Setup
-- Python 3.8.19
-- Cuda 12.0
-- PyTorch 2.4.1
-- Required libraries are listed in `requirements.txt`.
 
 ```
+UBP/                              # DPEEG implementation (built on the UBP baseline)
+├── README.md
+├── requirements.txt              # pip requirements
+├── ubp_env.yaml                  # exported conda environment
+├── LICENSE
+├── main.py                       # training / evaluation entry point (PyTorch Lightning)
+├── base
+│   ├── data_eeg.py               # THINGS-EEG dataset + CLIP feature extraction
+│   ├── data_meg.py               # THINGS-MEG dataset
+│   ├── diffusion.py              # conditional diffusion prior (DiffusionModel)
+│   ├── eeg_backbone.py           # EEG encoders (EEGProjectLayer, EEGNet, Deepnet, …)
+│   ├── inpating_data.py          # blur transforms (DirectT / UniformBlur / FoveaBlur)
+│   └── utils.py                  # ClipLoss, config instantiation, device selection
+├── configs
+│   ├── eeg/{baseline,ubp}.yaml   # THINGS-EEG configs
+│   └── meg/{baseline,ubp}.yaml   # THINGS-MEG configs
+├── preprocess
+│   ├── process_eeg_whiten.py     # raw EEG → MVNN-whitened .pt (per subject)
+│   ├── process_meg.py            # raw MEG → .pt
+│   └── process_resize.py         # resize image sets to 224×224
+├── scripts
+│   ├── exp.sh                    # run decoding / generative / joint training
+│   ├── bash_preprocess.sh        # batch preprocessing
+│   ├── train_mlp_baseline.py     # MLP regression baseline (ablation, Sec. 4.7.3)
+│   ├── run_all_mlp.py            # batch MLP baseline over subjects
+│   ├── run_multi_seed_mlp.py     # multi-seed MLP baseline
+│   ├── run_mlp_baselines.sh      # shell wrapper for the MLP baseline
+│   └── *.py                      # analysis / figure scripts (see below)
+├── assets                        # figures generated by the analysis scripts
+└── exp                           # experiment output (gitignored)
+```
+
+## Environment Setup
+
+- Python 3.8.19
+- CUDA 12.0
+- PyTorch 2.4.1
+- The remaining packages are listed in `requirements.txt` (or reproduce the full environment with `ubp_env.yaml`).
+
+```bash
 pip install -r requirements.txt
 ```
 
+> `diffusers` is required by the diffusion prior. `mne` and `scikit-learn` are only needed if you run preprocessing from raw data; they can be skipped if you download the already-processed data below.
+
 ## Data Preparation
-1. Download the Things-image from the [OSF repository](https://osf.io/jum2f/files/osfstorage), Things-EEG from the [OSF repository](https://osf.io/anp5v/files/osfstorage), Things-MEG from [Openneuro repository](https://openneuro.org/datasets/ds004212/versions/2.0.1), and put them in the `data` dir. (We provided the processed Things-EEG-MEG data on [BaiduNetdisk](https://pan.baidu.com/s/1ZZWBrrp2Ly2ZOBHKT0fmTA?pwd=9j22), [Huggingface-things-meg](https://huggingface.co/datasets/Haitao999/things-eeg-meg) and [Huggingface-things-eeg](https://huggingface.co/datasets/Haitao999/things-eeg). If the processed data is downloaded, the following two processing steps can be skipped.
 
-Recommendation: things.zip, things-eeg.zip, things-meg.zip is necessary, other files are optional.
+1. Download **THINGS-Image** ([OSF](https://osf.io/jum2f/files/osfstorage)), **THINGS-EEG** ([OSF](https://osf.io/anp5v/files/osfstorage)) and **THINGS-MEG** ([OpenNeuro](https://openneuro.org/datasets/ds004212/versions/2.0.1)), and place them under a `data/` directory (create or symlink it — it is not tracked by git). We also provide processed THINGS-EEG/MEG data on [BaiduNetdisk](https://pan.baidu.com/s/1ZZWBrrp2Ly2ZOBHKT0fmTA?pwd=9j22), [HuggingFace things-meg](https://huggingface.co/datasets/Haitao999/things-eeg-meg) and [HuggingFace things-eeg](https://huggingface.co/datasets/Haitao999/things-eeg). If you download the processed data, you can skip steps 2–3.
 
-3. Convert the data to .pt format using the preprocessing script for all subjects:
+   Recommended: `things.zip`, `things-eeg.zip` and `things-meg.zip` are necessary; the other files are optional.
+
+2. Convert the raw data to `.pt` format for all subjects:
+
+   ```bash
+   bash scripts/bash_preprocess.sh
+   ```
+
+3. Resize the downloaded images:
+
+   ```bash
+   python preprocess/process_resize.py --type eeg
+   python preprocess/process_resize.py --type meg
+   ```
+
+The resulting directory tree:
 
 ```
-/bin/bash scripts/bash_preprocess.sh
+data
+├── things-eeg
+│   ├── Image_set
+│   ├── Image_set_Resize
+│   ├── Raw_data (optional)
+│   └── Preprocessed_data_250Hz_whiten
+├── things
+│   └── THINGS
+│       ├── Images
+│       └── Metadata
+└── things-meg
+    ├── Image_set
+    ├── Image_set_Resize
+    ├── ds004212-download (Raw_data, optional)
+    └── Preprocessed_data
 ```
 
-3. Resize the downloaded images using the provided script:
-
-```
-python preprocess/process_resize.py --type eeg
-python preprocess/process_resize.py --type meg
-```
-
-Finally, we have the directory tree:
-```
-├── data
-    ├── things-eeg
-        ├── Image_set
-        ├── Image_set_Resize
-        ├── Raw_data (optional)
-        ├── Preprocessed_data_250Hz_whiten
-    ├── things
-        ├── THINGS
-            ├── Images
-            ├── Metadata
-    ├── things-meg
-        ├── Image_set
-        ├── Image_set_Resize
-        ├── ds004212-download (Raw_data, optional)
-        ├── Preprocessed_data
-```
 ## Run
-To run the experiments using the provided configurations, execute:
-```
-/bin/bash scripts/exp.sh
+
+All experiments use the **intra-subject** setting (each subject is trained and tested independently). The default backbone is `EEGProjectLayer` (EEG) + `RN50` (OpenCLIP, frozen).
+
+### 1. Decoding & retrieval-based encoding
+
+A single contrastive run gives both directions: the decoding accuracy (EEG→image) and — by transposing the similarity matrix — the retrieval-based encoding accuracy (image→EEG), at zero extra training cost.
+
+```bash
+python main.py \
+  --config configs/eeg/ubp.yaml \
+  --dataset eeg \
+  --subjects sub-08 \
+  --seed 0 \
+  --exp_setting intra-subject \
+  --brain_backbone EEGProjectLayer \
+  --vision_backbone RN50 \
+  --epoch 50 \
+  --lr 1e-4
 ```
 
+### 2. Generative encoding (diffusion prior, two-stage decoupled training)
+
+```bash
+python main.py \
+  --config configs/eeg/ubp.yaml \
+  --dataset eeg \
+  --subjects sub-08 \
+  --seed 0 \
+  --exp_setting intra-subject \
+  --brain_backbone EEGProjectLayer \
+  --vision_backbone RN50 \
+  --epoch 230 \
+  --lr 1e-4 \
+  --generative_encoding
 ```
-brain_backbone="EEGProjectLayer"
-vision_backbone="RN50"
-i="01"
-seed=0
-python main.py --config configs/ubp.yaml --subjects sub-$i --seed $seed --exp_setting intra-subject --brain_backbone $brain_backbone --vision_backbone $vision_backbone --epoch 50 --lr 1e-4;
 
+Stage 1 (epochs 0–30) trains only the EEG encoder; Stage 2 (epochs 31–230) freezes the encoder and trains only the diffusion model. At test time the model reports top-1/top-5, mAP, and the generated↔real EEG cosine-similarity metrics (`gen_eeg_cosine_sim`, off-diagonal similarity).
+
+### 3. Joint training (ablation, Sec. 4.7.1)
+
+```bash
+python main.py \
+  --config configs/eeg/ubp.yaml \
+  --dataset eeg \
+  --subjects sub-08 \
+  --seed 0 \
+  --exp_setting intra-subject \
+  --brain_backbone EEGProjectLayer \
+  --vision_backbone RN50 \
+  --epoch 230 \
+  --lr 1e-4 \
+  --generative_encoding \
+  --joint_training
 ```
-## Acknowledgement
-We acknowledge the contributions of the following datasets:
-- [A large and rich EEG dataset for modeling human visual object recognition](https://www.sciencedirect.com/science/article/pii/S1053811922008758) [THINGS-EEG]
-- [
-THINGS-data, a multimodal collection of large-scale datasets for investigating object representations in human brain and behavior](https://pubmed.ncbi.nlm.nih.gov/36847339/) [THINGS-MEG]
 
-The code is inspired by prior awesome works on neural decoding tasks:
-- [Decoding Natural Images from EEG for Object Recognition](https://github.com/eeyhsong/NICE-EEG) [ICLR 2024]
-- [Visual Decoding and Reconstruction via EEG Embeddings with Guided Diffusion](https://github.com/dongyangli-del/EEG_Image_decode) [NeurIPS 2024]
-- [Decoding Visual Neural Representations by Multimodal Learning of Brain-Visual-Linguistic Features](https://github.com/ChangdeDu/BraVL)  [TPAMI 2023]
+Batch helper (decoding + generative encoding for all 10 subjects):
 
-Uncertainy-aware work related to multimodality:
-- [Trusted multi-view classification with dynamic evidential fusion](https://github.com/hanmenghan/TMC) [TPAMI 2022]
-- [Provable Dynamic Fusion for Low-Quality Multimodal Data](https://github.com/QingyangZhang/QMF) (ICML 2023)
-- [Reliable Conflictive Multi-View Learning](https://github.com/jiajunsi/RCML) (AAAI 2024, Outstanding Paper)
+```bash
+bash scripts/exp.sh            # decoding + generative encoding
+bash scripts/exp.sh --mode gen  # generative encoding only
+```
+
+### 4. MLP regression baseline (ablation, Sec. 4.7.3)
+
+Trains an MLP of comparable size to the diffusion model to regress EEG features from image features (MSE or cosine loss):
+
+```bash
+python scripts/train_mlp_baseline.py \
+  --subjects sub-08 \
+  --loss mse \
+  --brain_ckpt exp/eeg_intra-subject_ubp_EEGProjectLayer_RN50/sub-08_seed0_genFalse/checkpoints/last.ckpt
+
+# batch: bash scripts/run_mlp_baselines.sh  (or python scripts/run_all_mlp.py)
+```
+
+`--brain_ckpt` must point to the frozen EEG encoder checkpoint produced by the decoding run (the `genFalse` run above).
+
+## Reproducing the figures and tables
+
+The analysis scripts load the checkpoints written under `exp/` (or the pre-extracted CLIP features). Run them from the repository root.
+
+| Paper | Script | Notes |
+| --- | --- | --- |
+| Fig. 7 / 8 — PCA of real / generated / image features (joint vs. decoupled) | `scripts/plot_feature_space_distribution.py` | `--method pca|tsne|umap`; loads a `genTrue` checkpoint |
+| Fig. 7 / 8 — PCA incl. the MLP baseline | `scripts/plot_pca_mlp_vs_diffusion.py` | needs `--diffusion_ckpt`, `--mlp_cos_ckpt`, `--brain_ckpt` |
+| MLP-vs-diffusion proximity (distance to real-EEG vs. image centroid) | `scripts/analyze_mlp_proximity.py` | — |
+| Fig. 11 — global vs. individualized uncertainty intervals | `scripts/plot_uncertainty_confidence_intervals.py` | `--csv` with `subject,similarity`, or demo data |
+| Sec. 4.8 — inter-trial consistency | `scripts/compute_inter_trial_consistency.py` | reads `data/.../test.pt` |
+| Fig. 12 — consistency vs. top-1 correlation | `scripts/correlation_consistency_vs_performance.py` | hardcodes the per-subject numbers from the paper |
+| Sec. 4.8 — EEG band / ERP analysis | `scripts/analyze_eeg_bands_erp.py` | reads `data/.../test.pt` |
+
+The final per-subject results are summarized by the training run itself and written to `<exp_dir>/test_results.json`; the similarity metrics are printed to stdout at test time.
 
 ## Citation
-If you find our work helpful, please cite:
+
+If you find this work useful, please cite:
+
 ```bibtex
-@inproceedings{wu2025bridging,
-  title={Bridging the Vision-Brain Gap with an Uncertainty-Aware Blur Prior},
-  author={Wu, Haitao and Li, Qing and Zhang, Changqing and He, Zhen and Ying, Xiaomin},
-  booktitle={Proceedings of the Computer Vision and Pattern Recognition Conference},
-  pages={2246--2257},
-  year={2025}
+@article{dpeeg,
+  title   = {DPEEG: Diffusion Prior-Based Generative Visual Neural Encoding},
+  author  = {Mu, Huiyu and Yao, Zeqi and Zhu, Gengxiao and Guo, Mengshuo and Zhang, Juntao and Wang, Yun},
+  year    = {2026},
+  note    = {Preprint}
 }
 ```
 
+> Update this entry with the venue / DOI once the paper is published.
 
-## Contact us
-For any additional questions, feel free to email wuhaitao@tju.edu.cn .
+## Acknowledgement
 
+This code builds on the [Uncertainty-Aware Blur Prior (UBP)](https://arxiv.org/abs/2503.04207) baseline, and is inspired by prior works on neural decoding:
+
+- [A large and rich EEG dataset for modeling human visual object recognition](https://www.sciencedirect.com/science/article/pii/S1053811922008758) (THINGS-EEG)
+- [THINGS-data, a multimodal collection of large-scale datasets for investigating object representations in human brain and behavior](https://pubmed.ncbi.nlm.nih.gov/36847339/) (THINGS-MEG)
+- [Decoding Natural Images from EEG for Object Recognition](https://github.com/eeyhsong/NICE-EEG) (ICLR 2024)
+- [Visual Decoding and Reconstruction via EEG Embeddings with Guided Diffusion](https://github.com/dongyangli-del/EEG_Image_decode) (NeurIPS 2024)
+- [Decoding Visual Neural Representations by Multimodal Learning of Brain-Visual-Linguistic Features](https://github.com/ChangdeDu/BraVL) (TPAMI 2023)
+
+## License
+
+This project is released under the [Apache License 2.0](LICENSE).
+
+## Contact
+
+For questions, please open an issue in this repository.

@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /xxxx/Uncertainty-aware-Blur-Prior
+cd "$(dirname "$0")/.."
 
 ## EEG
 # for subject in {1..10}

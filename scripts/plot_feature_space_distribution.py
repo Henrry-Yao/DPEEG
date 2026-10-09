@@ -7,7 +7,7 @@ checkpoint, extracts test-set features, projects them to 2D with t-SNE/UMAP/PCA,
 and saves a publication-ready distribution plot.
 
 Example:
-  /home/henrry/miniconda3/envs/ubp/bin/python scripts/plot_feature_space_distribution.py \
+  python scripts/plot_feature_space_distribution.py \
     --config configs/eeg/ubp.yaml \
     --checkpoint exp/eeg_intra-subject_ubp_EEGProjectLayer_RN50/sub-09_seed0_genTrue/checkpoints/last.ckpt \
     --subjects sub-09 \

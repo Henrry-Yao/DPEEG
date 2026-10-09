@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Batch run MLP-MSE and MLP-COS for all 10 subjects."""
 import subprocess, sys, os, json
+from pathlib import Path
 
-PY = "/home/henrry/miniconda3/envs/ubp/bin/python"
-PROJ = "/home/henrry/UBP/Uncertainty-aware-Blur-Prior-main"
-SCR = os.path.join(PROJ, "scripts/train_mlp_baseline.py")
-CKPT_DIR = os.path.join(PROJ, "exp/eeg_intra-subject_ubp_EEGProjectLayer_RN50")
+PY = sys.executable
+PROJ = str(Path(__file__).resolve().parents[1])
+SCR = os.path.join(PROJ, "scripts", "train_mlp_baseline.py")
+CKPT_DIR = os.path.join(PROJ, "exp", "eeg_intra-subject_ubp_EEGProjectLayer_RN50")
 
 subjects = [f"sub-{i:02d}" for i in range(1, 11)]
 results = {"mse": {}, "cosine": {}}

@@ -50,27 +50,31 @@ def update_config(args, config):
 
 
 def get_device(gpu_ids):
-    if gpu_ids=='auto':
-        nvidia_smi_output = subprocess.check_output(['nvidia-smi', '--query-gpu=index,memory.free,temperature.gpu', '--format=csv,noheader,nounits'])
-        gpu_info_lines = nvidia_smi_output.decode('utf-8').strip().split('\n')
-        gpu_info = []
-        for line in gpu_info_lines:
-            gpu_data = line.strip().split(', ')
-            index, memory_free, temperature = map(int, gpu_data)
-            gpu_info.append((index, memory_free, temperature))
-        gpu_info.sort(key=lambda x: x[1], reverse=True)
-        
-        memeory_rank_num=math.ceil(0.4*len(gpu_info))
-        selected_gpus = gpu_info[:memeory_rank_num]
-        selected_gpus.sort(key=lambda x: x[2])
-        selected_device = selected_gpus[0][0]
-        # device = torch.device(f'cuda:{selected_device}')
-    elif gpu_ids=="cpu":
-        device = torch.device('cpu')
+    if gpu_ids == 'auto':
+        try:
+            nvidia_smi_output = subprocess.check_output(
+                ['nvidia-smi', '--query-gpu=index,memory.free,temperature.gpu',
+                 '--format=csv,noheader,nounits'])
+            gpu_info_lines = nvidia_smi_output.decode('utf-8').strip().split('\n')
+            gpu_info = []
+            for line in gpu_info_lines:
+                gpu_data = line.strip().split(', ')
+                index, memory_free, temperature = map(int, gpu_data)
+                gpu_info.append((index, memory_free, temperature))
+            gpu_info.sort(key=lambda x: x[1], reverse=True)
+
+            memory_rank_num = math.ceil(0.4 * len(gpu_info))
+            selected_gpus = gpu_info[:memory_rank_num]
+            selected_gpus.sort(key=lambda x: x[2])
+            selected_device = selected_gpus[0][0]
+        except (FileNotFoundError, subprocess.CalledProcessError, ValueError, IndexError):
+            # nvidia-smi unavailable (no GPU / driver not on PATH) — fall back to cuda:0.
+            selected_device = 0
+    elif gpu_ids == "cpu":
+        return torch.device('cpu')
     else:
-        gpu_ids = list(map(int,gpu_ids.split(",")))
-        selected_device=gpu_ids[0]
-        # device = torch.device(f'cuda:{selected_device}')
+        gpu_ids = list(map(int, gpu_ids.split(",")))
+        selected_device = gpu_ids[0]
     return selected_device
 
 class ClipLoss(nn.Module):

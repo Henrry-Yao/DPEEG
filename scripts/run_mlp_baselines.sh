@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-cd ~/UBP/Uncertainty-aware-Blur-Prior-main
-PY=/home/henrry/miniconda3/envs/ubp/bin/python
+cd "$(dirname "$0")/.."
+PY=python
 SCR=scripts/train_mlp_baseline.py
 CKPT_DIR=exp/eeg_intra-subject_ubp_EEGProjectLayer_RN50
 
