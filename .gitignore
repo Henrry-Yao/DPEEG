@@ -17,3 +17,5 @@ __pycache__/
 
 # local Claude Code settings
 .claude/
+# generated analysis caches (*.npz) - regenerable, not tracked
+*.npz
